@@ -23,6 +23,7 @@ import type {
   Product,
   ProductOption,
   AddOn,
+  OptionDependency,
   Configuration,
   PriceBreakdown,
   Draft,
@@ -90,9 +91,28 @@ const isAddOnAvailable = (
   return dependencyValue === addOn.dependsOn.requiredValue;
 };
 
+// Readable name of what an add-on needs, e.g. "Include Premium Packaging" or "Aluminum material"
+const getRequirementLabel = (dependsOn: OptionDependency, product: Product): string => {
+  const option = product.options.find((o) => o.id === dependsOn.optionId);
+  if (!option) return dependsOn.optionId;
+  // Toggle only needs to be turned on, so name is enough
+  if (typeof dependsOn.requiredValue === 'boolean') return option.name;
+  const choice = option.choices?.find((c) => c.value === dependsOn.requiredValue);
+  return `${choice?.label ?? dependsOn.requiredValue} ${option.name.toLowerCase()}`;
+};
+
 const formatTimestamp = (isoString: string): string => {
   const date = new Date(isoString);
   return date.toLocaleString();
+};
+
+// Shortcut label for the Quick Add button (Cmd on Mac, Ctrl everywhere else)
+const QUICK_ADD_SHORTCUT = /Mac|iPhone|iPad/.test(navigator.userAgent) ? '⌘ Enter' : 'Ctrl+Enter';
+
+// Config from a share link (?config=...), read once when the configurator opens
+const getConfigFromUrl = (): Partial<Configuration> | null => {
+  const encodedConfig = new URLSearchParams(window.location.search).get('config');
+  return encodedConfig ? decodeConfigurationFromUrl(encodedConfig) : null;
 };
 
 const calculateColorColumns = (
@@ -119,15 +139,21 @@ export const ProductConfigurator: React.FC<ProductConfiguratorProps> = ({
   // State
   // -------------------------------------------------------------------------
 
+  // A share link wins over initialConfiguration, like before
+  const [urlConfig] = useState(getConfigFromUrl);
+
   const [selections, setSelections] = useState<Record<string, string | number | boolean>>(
-    () => initialConfiguration?.selections || getDefaultSelections(product),
+    () =>
+      urlConfig?.selections || initialConfiguration?.selections || getDefaultSelections(product),
   );
 
   const [selectedAddOns, setSelectedAddOns] = useState<string[]>(
-    () => initialConfiguration?.addOns || [],
+    () => urlConfig?.addOns || initialConfiguration?.addOns || [],
   );
 
-  const [quantity, setQuantity] = useState<number>(() => initialConfiguration?.quantity || 1);
+  const [quantity, setQuantity] = useState<number>(
+    () => urlConfig?.quantity || initialConfiguration?.quantity || 1,
+  );
 
   const [configId] = useState<string>(() => initialConfiguration?.id || generateConfigId());
 
@@ -145,8 +171,6 @@ export const ProductConfigurator: React.FC<ProductConfiguratorProps> = ({
   const [previewUrl, setPreviewUrl] = useState<string>(product.imageUrl);
 
   const [error, setError] = useState<string | null>(null);
-
-  const [shareUrl, setShareUrl] = useState<string>('');
 
   const containerRef = useRef<HTMLDivElement>(null);
   const colorPickerRef = useRef<HTMLDivElement>(null);
@@ -217,7 +241,9 @@ export const ProductConfigurator: React.FC<ProductConfiguratorProps> = ({
           setValidation(result);
           setIsValid(true);
         }
-      } catch {}
+      } catch {
+        // Validation failed, keep the last result
+      }
     };
 
     validate();
@@ -252,7 +278,6 @@ export const ProductConfigurator: React.FC<ProductConfiguratorProps> = ({
     if (onConfigurationChange) {
       onConfigurationChange(currentConfig);
     }
-    setIsDirty(true);
   }, [selections, selectedAddOns, quantity]);
 
   useEffect(() => {
@@ -261,27 +286,11 @@ export const ProductConfigurator: React.FC<ProductConfiguratorProps> = ({
     }
   }, [showDraftModal]);
 
-  useEffect(() => {
-    if (showShareModal) {
-      const encoded = encodeConfigurationToUrl(currentConfig);
-      const url = `${window.location.origin}${window.location.pathname}?config=${encoded}`;
-      setShareUrl(url);
-    }
+  const shareUrl = useMemo(() => {
+    if (!showShareModal) return '';
+    const encoded = encodeConfigurationToUrl(currentConfig);
+    return `${window.location.origin}${window.location.pathname}?config=${encoded}`;
   }, [showShareModal, currentConfig]);
-
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const encodedConfig = params.get('config');
-
-    if (encodedConfig) {
-      const decoded = decodeConfigurationFromUrl(encodedConfig);
-      if (decoded) {
-        if (decoded.selections) setSelections(decoded.selections);
-        if (decoded.addOns) setSelectedAddOns(decoded.addOns);
-        if (decoded.quantity) setQuantity(decoded.quantity);
-      }
-    }
-  }, []);
 
   // -------------------------------------------------------------------------
   // Event Handlers
@@ -293,25 +302,19 @@ export const ProductConfigurator: React.FC<ProductConfiguratorProps> = ({
         ...prev,
         [optionId]: value,
       }));
+      setIsDirty(true);
 
-      const option = product.options.find((o) => o.id === optionId);
-      // Clean up any dependent add-ons whose requirement is no longer met.
-      // Toggles are handled in handleAddOnToggle, so we only need to do this for select options.
-      if (option && option.type === 'select') {
-        const dependentAddOns = product.addOns.filter((a) => a.dependsOn?.optionId === optionId);
-
-        for (const addOn of dependentAddOns) {
-          if (addOn.dependsOn && value !== addOn.dependsOn.requiredValue) {
-            const index = selectedAddOns.indexOf(addOn.id);
-            if (index > -1) {
-              selectedAddOns.splice(index, 1);
-              setSelectedAddOns(selectedAddOns);
-            }
-          }
-        }
-      }
+      // Remove add-ons that depend on this option and which requirement is no longer met
+      // (e.g. Gift Wrap when packaging is turned off)
+      setSelectedAddOns((prev) =>
+        prev.filter((addOnId) => {
+          const addOn = product.addOns.find((a) => a.id === addOnId);
+          if (addOn?.dependsOn?.optionId !== optionId) return true;
+          return addOn.dependsOn.requiredValue === value;
+        }),
+      );
     },
-    [product.options, product.addOns, selectedAddOns],
+    [product.addOns],
   );
 
   const handleAddOnToggle = useCallback(
@@ -324,6 +327,7 @@ export const ProductConfigurator: React.FC<ProductConfiguratorProps> = ({
         return;
       }
 
+      setIsDirty(true);
       setSelectedAddOns((prev) => {
         if (prev.includes(addOnId)) {
           return prev.filter((id) => id !== addOnId);
@@ -343,6 +347,7 @@ export const ProductConfigurator: React.FC<ProductConfiguratorProps> = ({
 
       const clampedQuantity = Math.max(min, Math.min(max, newQuantity));
       setQuantity(clampedQuantity);
+      setIsDirty(true);
     },
     [product.options],
   );
@@ -395,11 +400,34 @@ export const ProductConfigurator: React.FC<ProductConfiguratorProps> = ({
     }
   }, [validation, price, currentConfig, onAddToCart]);
 
+  // Quick Add (button and shortcut) is blocked while the price is loading,
+  const canQuickAdd = !readOnly && !!validation?.valid && !isPriceLoading && price !== null;
+
   const handleQuickAdd = useCallback(() => {
-    if (price && onAddToCart) {
+    if (canQuickAdd && price && onAddToCart) {
       onAddToCart(currentConfig, price);
     }
-  }, [price, currentConfig, onAddToCart]);
+  }, [canQuickAdd, price, currentConfig, onAddToCart]);
+
+  // Ctrl+Enter (Cmd+Enter on Mac) runs Quick Add
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Enter' || !(event.ctrlKey || event.metaKey)) return;
+
+      // Not while the user types in a text field (e.g. draft name) or a modal is open
+      const target = event.target as HTMLElement | null;
+      const isTextField =
+        target?.tagName === 'TEXTAREA' ||
+        (target instanceof HTMLInputElement && target.type === 'text');
+      if (isTextField || showDraftModal || showShareModal) return;
+
+      event.preventDefault();
+      handleQuickAdd();
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [handleQuickAdd, showDraftModal, showShareModal]);
 
   const handleCopyShareUrl = useCallback(() => {
     navigator.clipboard
@@ -472,6 +500,29 @@ export const ProductConfigurator: React.FC<ProductConfiguratorProps> = ({
 
   const renderColorOption = (option: ProductOption) => {
     const currentValue = selections[option.id] as string;
+    const choices = option.choices ?? [];
+    // Only one swatch is reachable with Tab (the selected one), arrows move inside the group
+    const selectedIndex = choices.findIndex((c) => c.value === currentValue);
+    const tabStopIndex = selectedIndex >= 0 ? selectedIndex : 0;
+
+    const handleSwatchKeyDown = (event: React.KeyboardEvent<HTMLDivElement>, index: number) => {
+      if (readOnly) return;
+
+      if (event.key === ' ' || event.key === 'Enter') {
+        event.preventDefault();
+        handleOptionChange(option.id, choices[index].value);
+        return;
+      }
+
+      const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[event.key];
+      if (!step) return;
+
+      event.preventDefault();
+      const nextIndex = (index + step + choices.length) % choices.length;
+      handleOptionChange(option.id, choices[nextIndex].value);
+      const swatches = event.currentTarget.parentElement?.children;
+      (swatches?.[nextIndex] as HTMLElement | undefined)?.focus();
+    };
 
     return (
       <div className="option-group" key={option.id}>
@@ -491,9 +542,12 @@ export const ProductConfigurator: React.FC<ProductConfiguratorProps> = ({
               className={`color-swatch ${currentValue === choice.value ? 'selected' : ''}`}
               style={{ backgroundColor: choice.colorHex }}
               onClick={() => !readOnly && handleOptionChange(option.id, choice.value)}
+              onKeyDown={(e) => handleSwatchKeyDown(e, index)}
               title={choice.label}
               role="radio"
               aria-checked={currentValue === choice.value}
+              aria-label={choice.label}
+              tabIndex={index === tabStopIndex ? 0 : -1}
             />
           ))}
         </div>
@@ -615,7 +669,10 @@ export const ProductConfigurator: React.FC<ProductConfiguratorProps> = ({
           <div className="addon-description">
             {addOn.description}
             {!isAvailable && addOn.dependsOn && (
-              <span style={{ color: '#e74c3c' }}> (Requires {addOn.dependsOn.optionId})</span>
+              <span style={{ color: '#e74c3c' }}>
+                {' '}
+                (Requires: {getRequirementLabel(addOn.dependsOn, product)})
+              </span>
             )}
           </div>
         </div>
@@ -688,10 +745,19 @@ export const ProductConfigurator: React.FC<ProductConfiguratorProps> = ({
         onClick={() => handleModalClose('draft')}
         onKeyDown={(e) => handleModalKeyDown(e, 'draft')}
       >
-        <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <div
+          className="modal"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="drafts-modal-title"
+          onClick={(e) => e.stopPropagation()}
+        >
           <div className="modal-header">
-            <h3 className="modal-title">Saved Drafts</h3>
+            <h3 className="modal-title" id="drafts-modal-title">
+              Saved Drafts
+            </h3>
             <button
+              autoFocus
               className="modal-close"
               onClick={() => handleModalClose('draft')}
               aria-label="Close modal"
@@ -770,10 +836,19 @@ export const ProductConfigurator: React.FC<ProductConfiguratorProps> = ({
         onClick={() => handleModalClose('share')}
         onKeyDown={(e) => handleModalKeyDown(e, 'share')}
       >
-        <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <div
+          className="modal"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="share-modal-title"
+          onClick={(e) => e.stopPropagation()}
+        >
           <div className="modal-header">
-            <h3 className="modal-title">Share Configuration</h3>
+            <h3 className="modal-title" id="share-modal-title">
+              Share Configuration
+            </h3>
             <button
+              autoFocus
               className="modal-close"
               onClick={() => handleModalClose('share')}
               aria-label="Close modal"
@@ -888,9 +963,11 @@ export const ProductConfigurator: React.FC<ProductConfiguratorProps> = ({
               <button
                 className="quick-add-btn"
                 onClick={handleQuickAdd}
-                disabled={readOnly || !validation?.valid}
+                disabled={!canQuickAdd}
+                aria-keyshortcuts="Control+Enter Meta+Enter"
               >
                 ⚡ Quick Add to Cart
+                <span className="quick-add-shortcut">{QUICK_ADD_SHORTCUT}</span>
               </button>
             </div>
           </div>

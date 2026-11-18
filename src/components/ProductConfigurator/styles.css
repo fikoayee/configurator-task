@@ -436,6 +436,12 @@
   transition: background 0.2s;
 }
 
+.quick-add-shortcut {
+  margin-left: 8px;
+  font-size: 11px;
+  opacity: 0.7;
+}
+
 .quick-add-btn:hover {
   background: rgba(255, 255, 255, 0.2);
 }
@@ -614,13 +620,12 @@
 .btn:focus,
 .option-select:focus,
 .quantity-input:focus,
+.quantity-btn:focus,
+.color-swatch:focus,
 .toggle-switch:focus {
   outline: 2px solid #3498db;
   outline-offset: 2px;
 }
-
-/* Missing focus style for color swatches - accessibility issue */
-/* .color-swatch:focus { } */
 
 /* Draft List in Modal */
 .draft-list {

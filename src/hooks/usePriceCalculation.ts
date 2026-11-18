@@ -1,12 +1,10 @@
 // usePriceCalculation Hook
-// Marcus: "This hook handles async price fetching. A bit janky but works."
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import type {
   Configuration,
   Product,
   PriceBreakdown,
-  PriceResponse,
 } from '../components/ProductConfigurator/types';
 import { calculatePrice } from '../services/api';
 
@@ -18,6 +16,17 @@ interface UsePriceCalculationResult {
   refetch: () => void;
 }
 
+// Last price result together with the options it was calculated for
+interface PriceResult {
+  selections: Configuration['selections'];
+  addOns: Configuration['addOns'];
+  quantity: number;
+  reloadCount: number;
+  price: PriceBreakdown | null;
+  formattedTotal: string;
+  error: string | null;
+}
+
 /**
  * Custom hook for managing price calculation
  */
@@ -25,137 +34,73 @@ export function usePriceCalculation(
   config: Configuration | null,
   product: Product,
 ): UsePriceCalculationResult {
-  const [price, setPrice] = useState<PriceBreakdown | null>(null);
-  const [formattedTotal, setFormattedTotal] = useState<string>('$0.00');
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<PriceResult | null>(null);
+  const [reloadCount, setReloadCount] = useState(0);
 
-  // Track latest request timestamp to prevent stale responses from overwriting newer ones.
-  // Guards against race conditions when the user changes options in rapid succession.
-  const latestRequestRef = useRef<number>(0);
-
-  const fetchPrice = useCallback(async () => {
-    if (!config) {
-      setPrice(null);
-      setFormattedTotal('$0.00');
-      return;
-    }
-
-    setIsLoading(true);
-    setError(null);
-
-    const requestTime = Date.now();
-    latestRequestRef.current = requestTime;
-
-    try {
-      const response: PriceResponse = await calculatePrice(config, product);
-
-      if (response.timestamp >= latestRequestRef.current) {
-        setPrice(response.breakdown);
-        setFormattedTotal(response.formattedTotal);
-      }
-    } catch {
-      // Only set error if this is still the latest request
-      if (requestTime === latestRequestRef.current) {
-        setError('ERR_PRICE_CALC_FAILED');
-        setPrice(null);
-      }
-    } finally {
-      setIsLoading(false);
-    }
-  }, [config, product]);
-
-  // Fetch price when config changes
-  useEffect(() => {
-    fetchPrice();
-  }, [config?.selections, config?.addOns, config?.quantity]);
-
-  return {
-    price,
-    formattedTotal,
-    isLoading,
-    error,
-    refetch: fetchPrice,
-  };
-}
-
-/**
- * Debounced version of price calculation
- */
-export function useDebouncedPriceCalculation(
-  config: Configuration | null,
-  product: Product,
-  delay: number = 300,
-): UsePriceCalculationResult {
-  const [price, setPrice] = useState<PriceBreakdown | null>(null);
-  const [formattedTotal, setFormattedTotal] = useState<string>('$0.00');
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const configRef = useRef(config);
+  const selections = config?.selections;
+  const addOns = config?.addOns;
+  const quantity = config?.quantity;
 
   useEffect(() => {
-    // Clear any pending timeout
-    if (timeoutRef.current) {
-      clearTimeout(timeoutRef.current);
-    }
+    if (!config) return;
 
-    if (!config) {
-      setPrice(null);
-      setFormattedTotal('$0.00');
-      setIsLoading(false);
-      return;
-    }
+    // Set to true when the options change again before response comes back
+    let ignoreResponse = false;
+    const request = {
+      selections: config.selections,
+      addOns: config.addOns,
+      quantity: config.quantity,
+      reloadCount,
+    };
 
-    setIsLoading(true);
-
-    timeoutRef.current = setTimeout(async () => {
-      try {
-        const response = await calculatePrice(configRef.current!, product);
-        setPrice(response.breakdown);
-        setFormattedTotal(response.formattedTotal);
-        setError(null);
-      } catch {
-        setError('ERR_PRICE_CALC_FAILED');
-      } finally {
-        setIsLoading(false);
-      }
-    }, delay);
-
-    configRef.current = config;
+    calculatePrice(config, product)
+      .then((response) => {
+        if (!ignoreResponse) {
+          setResult({
+            ...request,
+            price: response.breakdown,
+            formattedTotal: response.formattedTotal,
+            error: null,
+          });
+        }
+      })
+      .catch(() => {
+        if (!ignoreResponse) {
+          setResult((prev) => ({
+            ...request,
+            price: null,
+            formattedTotal: prev?.formattedTotal ?? '$0.00',
+            error: 'ERR_PRICE_CALC_FAILED',
+          }));
+        }
+      });
 
     return () => {
-      if (timeoutRef.current) {
-        clearTimeout(timeoutRef.current);
-      }
+      ignoreResponse = true;
     };
-  }, [config, product, delay]);
+    // `config` is omitted on purpose, because it also changes when the user types
+    // a draft name, which doesn't affect the price
+  }, [selections, addOns, quantity, reloadCount, product]);
 
-  const refetch = useCallback(() => {
-    if (config) {
-      setIsLoading(true);
-      calculatePrice(config, product)
-        .then((response) => {
-          setPrice(response.breakdown);
-          setFormattedTotal(response.formattedTotal);
-          setError(null);
-        })
-        .catch(() => {
-          setError('ERR_PRICE_CALC_FAILED');
-        })
-        .finally(() => {
-          setIsLoading(false);
-        });
-    }
-  }, [config, product]);
+  const refetch = () => setReloadCount((count) => count + 1);
+
+  if (!config) {
+    return { price: null, formattedTotal: '$0.00', isLoading: false, error: null, refetch };
+  }
+
+  // Result is up to date when it was calculated for the current options
+  const isCurrent =
+    result !== null &&
+    result.selections === selections &&
+    result.addOns === addOns &&
+    result.quantity === quantity &&
+    result.reloadCount === reloadCount;
 
   return {
-    price,
-    formattedTotal,
-    isLoading,
-    error,
+    price: result?.price ?? null,
+    formattedTotal: result?.formattedTotal ?? '$0.00',
+    isLoading: !isCurrent,
+    error: isCurrent ? result.error : null,
     refetch,
   };
 }
