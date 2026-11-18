@@ -489,6 +489,29 @@ export const ProductConfigurator: React.FC<ProductConfiguratorProps> = ({
 
   const renderColorOption = (option: ProductOption) => {
     const currentValue = selections[option.id] as string;
+    const choices = option.choices ?? [];
+    // Only one swatch is reachable with Tab (the selected one), arrows move inside the group
+    const selectedIndex = choices.findIndex((c) => c.value === currentValue);
+    const tabStopIndex = selectedIndex >= 0 ? selectedIndex : 0;
+
+    const handleSwatchKeyDown = (event: React.KeyboardEvent<HTMLDivElement>, index: number) => {
+      if (readOnly) return;
+
+      if (event.key === ' ' || event.key === 'Enter') {
+        event.preventDefault();
+        handleOptionChange(option.id, choices[index].value);
+        return;
+      }
+
+      const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[event.key];
+      if (!step) return;
+
+      event.preventDefault();
+      const nextIndex = (index + step + choices.length) % choices.length;
+      handleOptionChange(option.id, choices[nextIndex].value);
+      const swatches = event.currentTarget.parentElement?.children;
+      (swatches?.[nextIndex] as HTMLElement | undefined)?.focus();
+    };
 
     return (
       <div className="option-group" key={option.id}>
@@ -508,9 +531,12 @@ export const ProductConfigurator: React.FC<ProductConfiguratorProps> = ({
               className={`color-swatch ${currentValue === choice.value ? 'selected' : ''}`}
               style={{ backgroundColor: choice.colorHex }}
               onClick={() => !readOnly && handleOptionChange(option.id, choice.value)}
+              onKeyDown={(e) => handleSwatchKeyDown(e, index)}
               title={choice.label}
               role="radio"
               aria-checked={currentValue === choice.value}
+              aria-label={choice.label}
+              tabIndex={index === tabStopIndex ? 0 : -1}
             />
           ))}
         </div>
@@ -705,10 +731,19 @@ export const ProductConfigurator: React.FC<ProductConfiguratorProps> = ({
         onClick={() => handleModalClose('draft')}
         onKeyDown={(e) => handleModalKeyDown(e, 'draft')}
       >
-        <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <div
+          className="modal"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="drafts-modal-title"
+          onClick={(e) => e.stopPropagation()}
+        >
           <div className="modal-header">
-            <h3 className="modal-title">Saved Drafts</h3>
+            <h3 className="modal-title" id="drafts-modal-title">
+              Saved Drafts
+            </h3>
             <button
+              autoFocus
               className="modal-close"
               onClick={() => handleModalClose('draft')}
               aria-label="Close modal"
@@ -787,10 +822,19 @@ export const ProductConfigurator: React.FC<ProductConfiguratorProps> = ({
         onClick={() => handleModalClose('share')}
         onKeyDown={(e) => handleModalKeyDown(e, 'share')}
       >
-        <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <div
+          className="modal"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="share-modal-title"
+          onClick={(e) => e.stopPropagation()}
+        >
           <div className="modal-header">
-            <h3 className="modal-title">Share Configuration</h3>
+            <h3 className="modal-title" id="share-modal-title">
+              Share Configuration
+            </h3>
             <button
+              autoFocus
               className="modal-close"
               onClick={() => handleModalClose('share')}
               aria-label="Close modal"
