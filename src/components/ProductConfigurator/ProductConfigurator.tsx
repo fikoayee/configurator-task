@@ -23,6 +23,7 @@ import type {
   Product,
   ProductOption,
   AddOn,
+  OptionDependency,
   Configuration,
   PriceBreakdown,
   Draft,
@@ -88,6 +89,16 @@ const isAddOnAvailable = (
 
   const dependencyValue = selections[addOn.dependsOn.optionId];
   return dependencyValue === addOn.dependsOn.requiredValue;
+};
+
+// Readable name of what an add-on needs, e.g. "Include Premium Packaging" or "Aluminum material"
+const getRequirementLabel = (dependsOn: OptionDependency, product: Product): string => {
+  const option = product.options.find((o) => o.id === dependsOn.optionId);
+  if (!option) return dependsOn.optionId;
+  // Toggle only needs to be turned on, so name is enough
+  if (typeof dependsOn.requiredValue === 'boolean') return option.name;
+  const choice = option.choices?.find((c) => c.value === dependsOn.requiredValue);
+  return `${choice?.label ?? dependsOn.requiredValue} ${option.name.toLowerCase()}`;
 };
 
 const formatTimestamp = (isoString: string): string => {
@@ -658,7 +669,10 @@ export const ProductConfigurator: React.FC<ProductConfiguratorProps> = ({
           <div className="addon-description">
             {addOn.description}
             {!isAvailable && addOn.dependsOn && (
-              <span style={{ color: '#e74c3c' }}> (Requires {addOn.dependsOn.optionId})</span>
+              <span style={{ color: '#e74c3c' }}>
+                {' '}
+                (Requires: {getRequirementLabel(addOn.dependsOn, product)})
+              </span>
             )}
           </div>
         </div>
