@@ -95,6 +95,9 @@ const formatTimestamp = (isoString: string): string => {
   return date.toLocaleString();
 };
 
+// Shortcut label for the Quick Add button (Cmd on Mac, Ctrl everywhere else)
+const QUICK_ADD_SHORTCUT = /Mac|iPhone|iPad/.test(navigator.userAgent) ? '⌘ Enter' : 'Ctrl+Enter';
+
 // Config from a share link (?config=...), read once when the configurator opens
 const getConfigFromUrl = (): Partial<Configuration> | null => {
   const encodedConfig = new URLSearchParams(window.location.search).get('config');
@@ -386,11 +389,34 @@ export const ProductConfigurator: React.FC<ProductConfiguratorProps> = ({
     }
   }, [validation, price, currentConfig, onAddToCart]);
 
+  // Quick Add (button and shortcut) is blocked while the price is loading,
+  const canQuickAdd = !readOnly && !!validation?.valid && !isPriceLoading && price !== null;
+
   const handleQuickAdd = useCallback(() => {
-    if (price && onAddToCart) {
+    if (canQuickAdd && price && onAddToCart) {
       onAddToCart(currentConfig, price);
     }
-  }, [price, currentConfig, onAddToCart]);
+  }, [canQuickAdd, price, currentConfig, onAddToCart]);
+
+  // Ctrl+Enter (Cmd+Enter on Mac) runs Quick Add
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Enter' || !(event.ctrlKey || event.metaKey)) return;
+
+      // Not while the user types in a text field (e.g. draft name) or a modal is open
+      const target = event.target as HTMLElement | null;
+      const isTextField =
+        target?.tagName === 'TEXTAREA' ||
+        (target instanceof HTMLInputElement && target.type === 'text');
+      if (isTextField || showDraftModal || showShareModal) return;
+
+      event.preventDefault();
+      handleQuickAdd();
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [handleQuickAdd, showDraftModal, showShareModal]);
 
   const handleCopyShareUrl = useCallback(() => {
     navigator.clipboard
@@ -879,9 +905,11 @@ export const ProductConfigurator: React.FC<ProductConfiguratorProps> = ({
               <button
                 className="quick-add-btn"
                 onClick={handleQuickAdd}
-                disabled={readOnly || !validation?.valid}
+                disabled={!canQuickAdd}
+                aria-keyshortcuts="Control+Enter Meta+Enter"
               >
                 ⚡ Quick Add to Cart
+                <span className="quick-add-shortcut">{QUICK_ADD_SHORTCUT}</span>
               </button>
             </div>
           </div>
